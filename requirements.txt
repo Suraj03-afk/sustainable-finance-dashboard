@@ -5,3 +5,5 @@ openpyxl
 statsmodels
 scikit-learn
 mlxtend
+prophet 
+holidays
