@@ -21,7 +21,7 @@ def load_data():
     # Load Objective 1 Data from 'news_makers_export analysis.xlsx'
     try:
         # NOTE: This assumes your Excel file is named 'news_makers_export analysis.xlsx'
-        bonds_filename = 'news_makers_export analysis-Copy.xlsx'
+        bonds_filename = 'news_makers_export analysis- Copy.xlsx'
         # NOTE: The code expects your data to be on a sheet named 'news_makers_export'
         df_bonds = pd.read_excel(bonds_filename, sheet_name='news_makers_export')
         df_bonds.columns = [str(col).strip() for col in df_bonds.columns]
@@ -37,7 +37,7 @@ def load_data():
     # Load Objective 2 Data from 'Behavioral_Bias_SRI_Dataset.xlsx'
     try:
         # NOTE: This assumes your Excel file is named 'Behavioral_Bias_SRI_Dataset.xlsx'
-        bias_filename = 'Behavioral_Bias_SRI_Dataset-Copy.xlsx'
+        bias_filename = 'Behavioral_Bias_SRI_Dataset- Copy.xlsx'
         # NOTE: The code expects your data to be on a sheet named 'Sheet2'
         df_bias = pd.read_excel(bias_filename, sheet_name='Sheet2')
         required_bias_cols = ['Region', 'Bias Prevalence (%)', 'ESG Awareness (%)']
@@ -54,7 +54,7 @@ def load_data():
     # Load Objective 3 Data from 'OECD-PINEVersion2025.xlsx'
     try:
         # NOTE: This assumes your Excel file is named 'OECD-PINEVersion2025.xlsx'
-        policy_filename = 'OECD-PINEVersion2025-Copy.xlsx'
+        policy_filename = 'OECD-PINEVersion2025- Copy.xlsx'
         # NOTE: The code expects your data to be on a sheet named 'OECD-PINEVersion2025 Objective '
         df_policy = pd.read_excel(policy_filename, sheet_name='OECD-PINEVersion2025 Objective ')
         oecd_countries = [
