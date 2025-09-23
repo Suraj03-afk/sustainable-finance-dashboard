@@ -13,43 +13,45 @@ st.set_page_config(
 # --- DATA LOADING AND CLEANING ---
 @st.cache_data
 def load_data():
-    # Load Objective 1 Data from the original Excel file
+    # Load Objective 1 Data from the specific CSV file
     try:
-        bonds_filename = 'news_makers_export analysis.xlsx'
-        # The script assumes your main data is on a sheet named 'news_makers_export'
-        # If your sheet has a different name, change it here. e.g., pd.read_excel(bonds_filename, sheet_name='Sheet1')
-        df_bonds = pd.read_excel(bonds_filename, sheet_name='news_makers_export')
+        bonds_filename = 'news_makers_export analysis - Copy.xlsx - news_makers_export.csv'
+        df_bonds = pd.read_csv(bonds_filename)
+        # Clean column names by removing leading/trailing spaces
         df_bonds.columns = [str(col).strip() for col in df_bonds.columns]
         df_bonds['Issue Date'] = pd.to_datetime(df_bonds['Issue Date'], errors='coerce')
         df_bonds['Year'] = df_bonds['Issue Date'].dt.year
         df_bonds['Amount (USD)'] = pd.to_numeric(df_bonds['Amount (USD)'], errors='coerce')
         df_bonds.dropna(subset=['Issue Date', 'Amount (USD)', 'Country', 'Sector'], inplace=True)
     except FileNotFoundError:
-        st.error(f"`{bonds_filename}` not found. Please place your Excel file in the same folder.")
+        st.error(f"Error: `{bonds_filename}` not found. Please ensure this file is in the same folder as the script.")
         return None, None, None
     except Exception as e:
-        st.error(f"Error loading `{bonds_filename}`. Ensure it contains a sheet named 'news_makers_export'. Error: {e}")
+        st.error(f"An error occurred while loading `{bonds_filename}`: {e}")
         return None, None, None
 
-    # Load Objective 2 Data from the original Excel file
+    # Load Objective 2 Data from the specific CSV file
     try:
-        bias_filename = 'Behavioral_Bias_SRI_Dataset.xlsx'
-        # Assumes data is on the first sheet by default
-        df_bias = pd.read_excel(bias_filename)
-        df_bias = df_bias[['Region', 'Bias Prevalence (%)', 'ESG Awareness (%)']]
+        bias_filename = 'Behavioral_Bias_SRI_Dataset - Copy.xlsx - Sheet2.csv'
+        df_bias = pd.read_csv(bias_filename)
+        # Ensure the required columns exist before trying to use them
+        required_bias_cols = ['Region', 'Bias Prevalence (%)', 'ESG Awareness (%)']
+        if not all(col in df_bias.columns for col in required_bias_cols):
+            st.error(f"The file `{bias_filename}` is missing one or more required columns: {required_bias_cols}")
+            return None, None, None
+        df_bias = df_bias[required_bias_cols]
         df_bias.columns = ['Region', 'BiasPrevalence', 'ESGAwareness']
     except FileNotFoundError:
-        st.error(f"`{bias_filename}` not found. Please place your Excel file in the same folder.")
+        st.error(f"Error: `{bias_filename}` not found. Please ensure this file is in the same folder as the script.")
         return None, None, None
     except Exception as e:
-        st.error(f"Error loading `{bias_filename}`: {e}")
+        st.error(f"An error occurred while loading `{bias_filename}`: {e}")
         return None, None, None
 
-    # Load Objective 3 Data from the original Excel file
+    # Load Objective 3 Data from the specific CSV file
     try:
-        policy_filename = 'OECD-PINEVersion2025.xlsx'
-        # The script assumes your main data is on a sheet named 'OECD-PINEVersion2025 Objective'
-        df_policy = pd.read_excel(policy_filename, sheet_name='OECD-PINEVersion2025 Objective ')
+        policy_filename = 'OECD-PINEVersion2025 - Copy.xlsx - OECD-PINEVersion2025 Objective .csv'
+        df_policy = pd.read_csv(policy_filename)
         oecd_countries = [
             "Australia", "Austria", "Belgium", "Canada", "Chile", "Colombia", "Costa Rica", "Czech Republic", "Denmark",
             "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Israel", "Italy",
@@ -59,10 +61,10 @@ def load_data():
         ]
         df_policy['OECD_Status'] = df_policy['CountryName'].apply(lambda x: 'OECD' if x in oecd_countries else 'Non-OECD')
     except FileNotFoundError:
-        st.error(f"`{policy_filename}` not found. Please place your Excel file in the same folder.")
+        st.error(f"Error: `{policy_filename}` not found. Please ensure this file is in the same folder as the script.")
         return None, None, None
     except Exception as e:
-        st.error(f"Error loading `{policy_filename}`. Ensure it contains a sheet named 'OECD-PINEVersion2025 Objective '. Error: {e}")
+        st.error(f"An error occurred while loading `{policy_filename}`: {e}")
         return None, None, None
 
     return df_bonds, df_bias, df_policy
@@ -187,3 +189,4 @@ if df_policy is not None:
 
 else:
     st.warning("Policy data could not be loaded.")
+
