@@ -172,7 +172,7 @@ def run_association_rules(df):
     basket_sets = basket.applymap(lambda x: 1 if x > 0 else 0)
     frequent_itemsets = apriori(basket_sets, min_support=0.05, use_colnames=True)
     if frequent_itemsets.empty: return pd.DataFrame(columns=['antecedents', 'consequents', 'support', 'confidence', 'lift'])
-    rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1)
+    rules = association_rules(frequent_itemsets, metric="lift", min_threshold=0) # Start with 0 threshold
     rules['antecedents'] = rules['antecedents'].apply(lambda x: ', '.join(list(x)))
     rules['consequents'] = rules['consequents'].apply(lambda x: ', '.join(list(x)))
     return rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']].sort_values(by='lift', ascending=False)
@@ -190,9 +190,22 @@ if df_bonds is not None and not df_bonds.empty:
     st.sidebar.header("Dashboard Filters")
     min_year, max_year = int(df_bonds['Year'].min()), int(df_bonds['Year'].max())
     selected_years = st.sidebar.slider("Select Year Range", min_year, max_year, (min_year, max_year))
+    
     all_countries = sorted(df_bonds['Country'].astype(str).unique())
     selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=all_countries)
-    df_bonds_filtered = df_bonds[(df_bonds['Year'] >= selected_years[0]) & (df_bonds['Year'] <= selected_years[1]) & (df_bonds['Country'].isin(selected_countries))]
+    
+    all_sectors = sorted(df_bonds['Sector'].astype(str).unique())
+    selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=all_sectors)
+    
+    all_themes = sorted(df_bonds['Theme'].astype(str).unique())
+    selected_themes = st.sidebar.multiselect("Select Themes", all_themes, default=all_themes)
+    
+    df_bonds_filtered = df_bonds[
+        (df_bonds['Year'] >= selected_years[0]) & (df_bonds['Year'] <= selected_years[1]) &
+        (df_bonds['Country'].isin(selected_countries)) &
+        (df_bonds['Sector'].isin(selected_sectors)) &
+        (df_bonds['Theme'].isin(selected_themes))
+    ]
     
     if not df_bonds_filtered.empty:
         col1, col2, col3 = st.columns(3)
@@ -201,7 +214,7 @@ if df_bonds is not None and not df_bonds.empty:
         col3.metric("Number of Countries", f"{df_bonds_filtered['Country'].nunique()}")
         
         st.markdown("### Market Trends and Composition")
-        st.info("The following charts illustrate the rapid growth and diversification of the green bond market over time.")
+        st.info("The following charts illustrate the rapid growth and diversification of the green bond market over time. Use the filters in the sidebar to explore the data.")
         
         fig_growth = px.line(df_bonds_filtered.groupby('Year')['Amount (USD)'].sum().reset_index(), 
                              x='Year', y='Amount (USD)', title="Annual Green Bond Issuance Growth",
@@ -248,7 +261,7 @@ if df_bonds is not None and not df_bonds.empty:
             else:
                 st.warning("Could not build regression model for the selected data. Please select a larger range of data using the sidebar filters.")
 
-    else: st.warning("Data for the selected filters is empty. Please adjust the year range or country selection.")
+    else: st.warning("No data found for the selected filters. Please adjust the year range or country/sector/theme selection.")
 else: st.warning("Data for Objective 1 could not be loaded.")
 
 st.divider()
@@ -316,12 +329,12 @@ if df_policy is not None:
         st.markdown("This model finds 'if-then' rules in how countries combine different policy instruments. It helps uncover a natural sequence for policy adoption, providing a roadmap for developing nations.")
         rules = run_association_rules(df_policy)
         if rules is not None and not rules.empty:
-            st.markdown("Use the sliders to filter rules by their statistical strength.")
+            st.markdown("Use the sliders to filter for rules with a specific strength.")
             col1, col2 = st.columns(2)
-            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.8, 0.05, key="confidence_slider")
-            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 2.0, 0.1, key="lift_slider")
+            max_confidence = col1.slider("Maximum Confidence", 0.0, 1.0, 1.0, 0.05, key="confidence_slider")
+            max_lift = col2.slider("Maximum Lift", 0.0, 10.0, 10.0, 0.1, key="lift_slider")
             
-            filtered_rules = rules[(rules['confidence'] >= min_confidence) & (rules['lift'] >= min_lift)]
+            filtered_rules = rules[(rules['confidence'] <= max_confidence) & (rules['lift'] <= max_lift)]
             
             if not filtered_rules.empty:
                 st.dataframe(filtered_rules)
@@ -334,15 +347,16 @@ if df_policy is not None:
                 confidence = strongest_rule['confidence']
                 lift = strongest_rule['lift']
                 
-                st.info(f"""
-                The strongest rule found with the current filter settings is:
-                **IF** a country implements **`{antecedent}`**, **THEN** it is **{confidence:.0%} likely** to also have **`{consequent}`**.
+                st.success(f"""
+                **The Strongest Rule Found:**
+                IF a country implements **`{antecedent}`**, THEN it is **{confidence:.0%} likely** to also have **`{consequent}`**.
 
-                **What this means:** The 'lift' value of **{lift:.2f}** shows that this combination occurs over **{lift:.1f} times more frequently** than would be expected by random chance. 
-                This suggests a strong sequential relationship, indicating that `{antecedent}` may be a foundational policy that enables the later adoption of `{consequent}`.
+                **Strategic Implication:**
+                The 'lift' value of **{lift:.2f}** shows this combination is over **{lift:.1f} times more likely** than random chance. 
+                This reveals a potential **'policy pathway.'** It suggests that developing nations seeking to implement the more advanced **`{consequent}`** should first focus on building the necessary regulatory capacity and market understanding by establishing foundational policies like **`{antecedent}`**.
                 """)
             else:
-                st.warning("No rules found with the current filter settings. Try lowering the thresholds.")
+                st.warning("No rules found with the current filter settings. Try increasing the maximum thresholds.")
         else:
             st.warning("No significant association rules found in the dataset.")
 else: st.warning("Data for Objective 3 could not be loaded.")
