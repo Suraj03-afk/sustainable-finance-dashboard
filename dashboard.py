@@ -2,6 +2,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import numpy as np
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -21,57 +26,82 @@ def load_data():
     # Load Objective 1 Data
     try:
         bonds_filename = 'news_makers_export analysis - Copy.xlsx'
-        # NOTE: The code expects your data to be on a sheet named 'news_makers_export'
         df_bonds = pd.read_excel(bonds_filename, sheet_name='news_makers_export')
         df_bonds.columns = [str(col).strip() for col in df_bonds.columns]
         df_bonds['Issue Date'] = pd.to_datetime(df_bonds['Issue Date'], errors='coerce')
         df_bonds['Year'] = df_bonds['Issue Date'].dt.year
         df_bonds['Amount (USD)'] = pd.to_numeric(df_bonds['Amount (USD)'], errors='coerce')
         df_bonds.dropna(subset=['Issue Date', 'Amount (USD)', 'Country', 'Sector'], inplace=True)
-    except FileNotFoundError:
-        st.error(f"Error: `{bonds_filename}` not found. Please ensure this Excel file is in your project folder.")
     except Exception as e:
-        st.error(f"Error loading `{bonds_filename}`. Please ensure it contains a worksheet named exactly 'news_makers_export'. Error: {e}")
+        st.error(f"Error loading Objective 1 data from `{bonds_filename}`. Please check file and sheet name ('news_makers_export'). Error: {e}")
 
     # Load Objective 2 Data
     try:
         bias_filename = 'Behavioral_Bias_SRI_Dataset - Copy.xlsx'
-        # NOTE: The code expects your data to be on a sheet named 'Sheet2'
         df_bias = pd.read_excel(bias_filename, sheet_name='Sheet2')
-        required_bias_cols = ['Region', 'Bias Prevalence (%)', 'ESG Awareness (%)']
-        if not all(col in df_bias.columns for col in required_bias_cols):
-            st.error(f"The sheet 'Sheet2' in `{bias_filename}` is missing required columns: {required_bias_cols}")
+        # We need Investor Type for the regression model
+        required_cols = ['Region', 'Investor Type', 'ESG Awareness (%)', 'Bias Prevalence (%)']
+        if not all(col in df_bias.columns for col in required_cols):
+             st.error(f"The sheet 'Sheet2' in `{bias_filename}` is missing required columns.")
         else:
-            df_bias = df_bias[required_bias_cols]
-            df_bias.columns = ['Region', 'BiasPrevalence', 'ESGAwareness']
-    except FileNotFoundError:
-        st.error(f"Error: `{bias_filename}` not found. Please ensure this Excel file is in your project folder.")
+            df_bias = df_bias[required_cols]
+            df_bias.columns = ['Region', 'InvestorType', 'ESGAwareness', 'BiasPrevalence']
+            df_bias.dropna(inplace=True)
     except Exception as e:
-        st.error(f"Error loading `{bias_filename}`. Please ensure it contains a worksheet named exactly 'Sheet2'. Error: {e}")
+        st.error(f"Error loading Objective 2 data from `{bias_filename}`. Please check file and sheet name ('Sheet2'). Error: {e}")
 
     # Load Objective 3 Data
     try:
         policy_filename = 'OECD-PINEVersion2025 - Copy.xlsx'
-        # NOTE: The code expects your data to be on a sheet named 'OECD-PINEVersion2025 Objective '
         df_policy = pd.read_excel(policy_filename, sheet_name='OECD-PINEVersion2025 Objective ')
-        oecd_countries = [
-            "Australia", "Austria", "Belgium", "Canada", "Chile", "Colombia", "Costa Rica", "Czech Republic", "Denmark",
-            "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Israel", "Italy",
-            "Japan", "Korea", "Latvia", "Lithuania", "Luxembourg", "Mexico", "Netherlands", "New Zealand", "Norway",
-            "Poland", "Portugal", "Slovak Republic", "Slovenia", "Spain", "Sweden", "Switzerland", "Turkey",
-            "United Kingdom", "United States"
-        ]
+        oecd_countries = ["Australia", "Austria", "Belgium", "Canada", "Chile", "Colombia", "Costa Rica", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Israel", "Italy", "Japan", "Korea", "Latvia", "Lithuania", "Luxembourg", "Mexico", "Netherlands", "New Zealand", "Norway", "Poland", "Portugal", "Slovak Republic", "Slovenia", "Spain", "Sweden", "Switzerland", "Turkey", "United Kingdom", "United States"]
         df_policy['OECD_Status'] = df_policy['CountryName'].apply(lambda x: 'OECD' if x in oecd_countries else 'Non-OECD')
-    except FileNotFoundError:
-        st.error(f"Error: `{policy_filename}` not found. Please ensure this Excel file is in your project folder.")
     except Exception as e:
-        st.error(f"Error loading `{policy_filename}`. Please ensure it contains a worksheet named exactly 'OECD-PINEVersion2025 Objective '. Error: {e}")
+        st.error(f"Error loading Objective 3 data from `{policy_filename}`. Please check file and sheet name ('OECD-PINEVersion2025 Objective '). Error: {e}")
 
     return df_bonds, df_bias, df_policy
 
+# --- ADVANCED ANALYSIS FUNCTION ---
+def run_regression_analysis(df):
+    """
+    Performs a multiple linear regression to identify the key drivers of investor bias.
+    Returns the model's accuracy score and a dataframe of feature importances.
+    """
+    if df is None or df.empty:
+        return None, None
+
+    X = df[['Region', 'InvestorType', 'ESGAwareness']]
+    y = df['BiasPrevalence']
+
+    categorical_features = ['Region', 'InvestorType']
+    one_hot_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+
+    preprocessor = ColumnTransformer(
+        transformers=[('cat', one_hot_encoder, categorical_features)],
+        remainder='passthrough'
+    )
+
+    model = Pipeline(steps=[('preprocessor', preprocessor),
+                            ('regressor', LinearRegression())])
+
+    model.fit(X, y) # Train on the full dataset for demonstration
+    score = model.score(X, y)
+
+    feature_names = model.named_steps['preprocessor'].get_feature_names_out()
+    coefficients = model.named_steps['regressor'].coef_
+    
+    coef_summary = pd.DataFrame(coefficients, index=feature_names, columns=['Coefficient'])
+    coef_summary['AbsoluteCoefficient'] = np.abs(coef_summary['Coefficient'])
+    coef_summary = coef_summary.sort_values('AbsoluteCoefficient', ascending=False)
+    
+    # Clean up feature names for better display
+    coef_summary.index = coef_summary.index.str.replace('remainder__', '').str.replace('cat__', '')
+
+    return score, coef_summary
+
+# --- MAIN APP LOGIC ---
 df_bonds, df_bias, df_policy = load_data()
 
-# --- MAIN DASHBOARD ---
 st.title("🌿 Sustainable Finance Project Dashboard")
 st.markdown("An interactive summary of the key findings across three core research objectives.")
 
@@ -83,8 +113,7 @@ if df_bonds is not None:
     all_countries = sorted(df_bonds['Country'].astype(str).unique())
     selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=all_countries)
     df_bonds_filtered = df_bonds[
-        (df_bonds['Year'] >= selected_years[0]) &
-        (df_bonds['Year'] <= selected_years[1]) &
+        (df_bonds['Year'] >= selected_years[0]) & (df_bonds['Year'] <= selected_years[1]) &
         (df_bonds['Country'].isin(selected_countries))
     ]
 else:
@@ -93,6 +122,7 @@ else:
 
 # --- OBJECTIVE 1: GLOBAL GREEN FINANCE MARKET ---
 st.header("Objective 1: The Global Green Finance Market")
+# ... (Objective 1 code remains the same as previous version)
 if df_bonds is None:
     st.warning("Data for Objective 1 could not be loaded. Please check the file and sheet name.")
 elif not df_bonds_filtered.empty:
@@ -123,6 +153,7 @@ else:
 # --- OBJECTIVE 2: INVESTOR PSYCHOLOGY LANDSCAPE ---
 st.header("Objective 2: The Investor Psychology Landscape")
 if df_bias is not None:
+    st.markdown("### Descriptive Analysis")
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("The Awareness-Bias Relationship")
@@ -133,11 +164,40 @@ if df_bias is not None:
         bias_by_region = df_bias.sort_values('BiasPrevalence', ascending=False)
         fig_bias_bar = px.bar(bias_by_region, x='Region', y='BiasPrevalence', labels={"BiasPrevalence": "Bias Prevalence (%)"})
         st.plotly_chart(fig_bias_bar, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### Advanced Driver Analysis (Predictive Model)")
+    st.write("This model predicts 'Bias Prevalence' based on Awareness, Region, and Investor Type to find the most influential factors.")
+    
+    # Run and display the regression analysis
+    model_score, coef_summary = run_regression_analysis(df_bias)
+    
+    if model_score is not None and coef_summary is not None:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Model R-squared (Accuracy)", f"{model_score:.2f}", help="This means the model can explain {:.0f}% of the variation in investor bias.".format(model_score * 100))
+            
+            st.subheader("Key Drivers of Investor Bias")
+            st.write("The chart below ranks the factors by their impact strength (absolute coefficient).")
+            
+            # Bar chart of feature importance
+            coef_summary_chart = coef_summary.sort_values('AbsoluteCoefficient', ascending=True)
+            fig_importance = px.bar(coef_summary_chart, y=coef_summary_chart.index, x='AbsoluteCoefficient', orientation='h', labels={"y": "Feature", "AbsoluteCoefficient": "Impact Strength"})
+            st.plotly_chart(fig_importance, use_container_width=True)
+
+        with col2:
+            st.subheader("Detailed Model Coefficients")
+            st.dataframe(coef_summary)
+            most_important_driver = coef_summary.index[0]
+            st.success(f"**Conclusion:** The single most important predictor of investor bias is **'{most_important_driver}'**.")
+    else:
+        st.warning("Could not run the advanced analysis.")
 else:
-    st.warning("Data for Objective 2 could not be loaded. Please check the file and sheet name.")
+    st.warning("Data for Objective 2 could not be loaded.")
 
 # --- OBJECTIVE 3: GLOBAL BIODIVERSITY POLICY TOOLKIT ---
 st.header("Objective 3: The Global Biodiversity Policy Toolkit")
+# ... (Objective 3 code remains the same as previous version)
 if df_policy is not None:
     col1, col2 = st.columns(2)
     with col1:
