@@ -20,6 +20,33 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- STYLING ---
+st.markdown("""
+<style>
+    .stMetric {
+        border-radius: 10px;
+        padding: 15px;
+        background-color: #f0f2f6;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+		gap: 24px;
+	}
+    .stTabs [data-baseweb="tab"] {
+		height: 50px;
+        white-space: pre-wrap;
+		background-color: #F0F2F6;
+		border-radius: 4px 4px 0px 0px;
+		gap: 1px;
+		padding-top: 10px;
+		padding-bottom: 10px;
+	}
+	.stTabs [aria-selected="true"] {
+  		background-color: #FFFFFF;
+	}
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- DATA LOADING AND CLEANING ---
 @st.cache_data
 def load_data():
@@ -36,6 +63,8 @@ def load_data():
         df_bonds['Year'] = df_bonds['Issue Date'].dt.year
         df_bonds['Amount (USD)'] = pd.to_numeric(df_bonds['Amount (USD)'], errors='coerce')
         df_bonds.dropna(subset=['Issue Date', 'Amount (USD)', 'Country', 'Sector', 'Theme'], inplace=True)
+    except FileNotFoundError:
+        st.error(f"Error: The file `{bonds_filename}` was not found. Please ensure it is in the same folder as the script.")
     except Exception as e:
         st.error(f"Error loading Objective 1 data from `{bonds_filename}`. Please check file and sheet name ('news_makers_export'). Error: {e}")
 
@@ -44,11 +73,13 @@ def load_data():
         df_bias = pd.read_excel(bias_filename, sheet_name='Sheet2')
         required_cols = ['Region', 'Investor Type', 'ESG Awareness (%)', 'Bias Prevalence (%)']
         if not all(col in df_bias.columns for col in required_cols):
-             st.error(f"The sheet 'Sheet2' in `{bias_filename}` is missing required columns.")
+             st.error(f"The sheet 'Sheet2' in `{bias_filename}` is missing required columns: {', '.join(col for col in required_cols if col not in df_bias.columns)}")
         else:
             df_bias = df_bias[required_cols]
             df_bias.columns = ['Region', 'InvestorType', 'ESGAwareness', 'BiasPrevalence']
             df_bias.dropna(inplace=True)
+    except FileNotFoundError:
+        st.error(f"Error: The file `{bias_filename}` was not found. Please ensure it is in the same folder as the script.")
     except Exception as e:
         st.error(f"Error loading Objective 2 data from `{bias_filename}`. Error: {e}")
 
@@ -57,6 +88,8 @@ def load_data():
         df_policy = pd.read_excel(policy_filename, sheet_name='OECD-PINEVersion2025 Objective ')
         oecd_countries = ["Australia", "Austria", "Belgium", "Canada", "Chile", "Colombia", "Costa Rica", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Israel", "Italy", "Japan", "Korea", "Latvia", "Lithuania", "Luxembourg", "Mexico", "Netherlands", "New Zealand", "Norway", "Poland", "Portugal", "Slovak Republic", "Slovenia", "Spain", "Sweden", "Switzerland", "Turkey", "United Kingdom", "United States"]
         df_policy['OECD_Status'] = df_policy['CountryName'].apply(lambda x: 'OECD' if x in oecd_countries else 'Non-OECD')
+    except FileNotFoundError:
+        st.error(f"Error: The file `{policy_filename}` was not found. Please ensure it is in the same folder as the script.")
     except Exception as e:
         st.error(f"Error loading Objective 3 data from `{policy_filename}`. Error: {e}")
 
@@ -78,15 +111,12 @@ def run_prophet_forecast(df):
 def run_bond_size_regression(df):
     if df is None or df.empty or len(df) < 10: return None, None
     
-    # To make the model stable, we'll focus on the most frequent categories
     top_countries = df['Country'].value_counts().nlargest(10).index
     top_sectors = df['Sector'].value_counts().nlargest(10).index
-    
     df_filtered = df[df['Country'].isin(top_countries) & df['Sector'].isin(top_sectors)].copy()
     
     if len(df_filtered) < 10: return None, None
 
-    # Log transform the target variable to handle skewness
     y = np.log1p(df_filtered['Amount (USD)'])
     X = df_filtered[['Country', 'Sector', 'Year']]
     
@@ -96,7 +126,7 @@ def run_bond_size_regression(df):
     models = {
         "Linear Regression": LinearRegression(),
         "Ridge Regression (alpha=1.0)": Ridge(alpha=1.0),
-        "Lasso Regression (alpha=0.01)": Lasso(alpha=0.01) # Use a smaller alpha for Lasso
+        "Lasso Regression (alpha=0.01)": Lasso(alpha=0.01)
     }
     
     scores = {}
@@ -123,7 +153,11 @@ def run_kmeans_clustering(df):
     scaler = StandardScaler()
     scaled_features = scaler.fit_transform(features)
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-    df['Cluster'] = kmeans.fit_predict(scaled_features).astype(str)
+    df['Cluster'] = kmeans.fit_predict(scaled_features)
+    # Re-order clusters for consistent interpretation
+    cluster_means = df.groupby('Cluster')['BiasPrevalence'].mean().sort_values().index
+    cluster_map = {old: new for new, old in enumerate(cluster_means)}
+    df['Cluster'] = df['Cluster'].map(cluster_map).astype(str)
     return df
 
 @st.cache_data
@@ -141,122 +175,155 @@ def run_association_rules(df):
 # --- MAIN APP ---
 df_bonds, df_bias, df_policy = load_data()
 st.title("🌿 Sustainable Finance Project Dashboard")
-st.markdown("An interactive summary of key findings and advanced data analytics across three core research objectives.")
+st.markdown("An interactive summary of key findings and advanced data analytics across three core research objectives. Use the sidebar to filter the data for Objective 1.")
 
-# --- SIDEBAR FILTERS ---
-if df_bonds is not None:
+st.divider()
+
+# --- OBJECTIVE 1 ---
+st.header("📈 Objective 1: The Global Green Finance Market")
+if df_bonds is not None and not df_bonds.empty:
     st.sidebar.header("Dashboard Filters")
     min_year, max_year = int(df_bonds['Year'].min()), int(df_bonds['Year'].max())
     selected_years = st.sidebar.slider("Select Year Range", min_year, max_year, (min_year, max_year))
     all_countries = sorted(df_bonds['Country'].astype(str).unique())
     selected_countries = st.sidebar.multiselect("Select Countries", all_countries, default=all_countries)
     df_bonds_filtered = df_bonds[(df_bonds['Year'] >= selected_years[0]) & (df_bonds['Year'] <= selected_years[1]) & (df_bonds['Country'].isin(selected_countries))]
-else:
-    df_bonds_filtered = pd.DataFrame()
-
-# --- OBJECTIVE 1 ---
-st.header("Objective 1: The Global Green Finance Market")
-if not df_bonds_filtered.empty:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Capital Mobilised", f"${df_bonds_filtered['Amount (USD)'].sum()/1e9:.2f}B")
-    col2.metric("Number of Bonds", f"{len(df_bonds_filtered):,}")
-    col3.metric("Number of Countries", f"{df_bonds_filtered['Country'].nunique()}")
     
-    with st.expander("Advanced Analysis 1: Time Series Forecasting"):
-        st.markdown("This model uses the Prophet forecasting library to project the future growth of the green bond market based on historical trends.")
-        forecast_data = run_prophet_forecast(df_bonds) # Use unfiltered data for a stable forecast
-        if forecast_data is not None:
-            fig_forecast = go.Figure()
-            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], name='Forecast', line=dict(color='royalblue', width=2)))
-            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill=None, mode='lines', line=dict(color='lightgrey'), name='Upper Bound'))
-            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='lines', line=dict(color='lightgrey'), name='Lower Bound'))
-            actuals_df = df_bonds.groupby(pd.Grouper(key='Issue Date', freq='M'))['Amount (USD)'].sum().reset_index()
-            fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Monthly Data', marker=dict(color='red', size=4)))
-            fig_forecast.update_layout(title="5-Year Green Bond Market Forecast", xaxis_title="Date", yaxis_title="Capital Mobilised (USD)")
-            st.plotly_chart(fig_forecast, use_container_width=True)
-            st.info("The forecast shows the expected growth trajectory, making a strong case for the urgent need for a standardized framework.")
-        else:
-            st.warning("Could not generate forecast. More data points are needed.")
-
-    with st.expander("Advanced Analysis 2: Predicting Green Bond Size"):
-        st.markdown("This analysis compares three regression models to predict the **size (Amount USD)** of a green bond based on its characteristics. It helps identify the key drivers of market structure.")
+    if not df_bonds_filtered.empty:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Capital Mobilised", f"${df_bonds_filtered['Amount (USD)'].sum()/1e9:.2f}B")
+        col2.metric("Number of Bonds Issued", f"{len(df_bonds_filtered):,}")
+        col3.metric("Number of Countries", f"{df_bonds_filtered['Country'].nunique()}")
         
-        scores, coefficients = run_bond_size_regression(df_bonds_filtered)
+        st.markdown("### Market Trends and Composition")
+        st.info("The following charts illustrate the rapid growth and diversification of the green bond market over time.")
         
-        if scores:
-            st.subheader("Model Performance (R-squared)")
-            st.info("R-squared measures how well the model explains the variation in bond size. Higher is better. The target variable (Amount USD) has been log-transformed for model stability.")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Linear Regression", f"{scores['Linear Regression']:.3f}")
-            col2.metric("Ridge Regression", f"{scores['Ridge Regression (alpha=1.0)']:.3f}")
-            col3.metric("Lasso Regression", f"{scores['Lasso Regression (alpha=0.01)']:.3f}")
+        fig_growth = px.line(df_bonds_filtered.groupby('Year')['Amount (USD)'].sum().reset_index(), 
+                             x='Year', y='Amount (USD)', title="Annual Green Bond Issuance Growth",
+                             template="plotly_white", markers=True)
+        st.plotly_chart(fig_growth, use_container_width=True)
 
-            st.subheader("Model Coefficients")
-            st.markdown("Coefficients show the impact of each feature on a bond's size. Lasso is notable for shrinking unimportant feature coefficients to zero, helping with feature selection.")
+
+        with st.expander("Advanced Analysis 1: Time Series Forecasting"):
+            st.markdown("This model uses the Prophet forecasting library to project the future growth of the green bond market based on historical trends.")
+            forecast_data = run_prophet_forecast(df_bonds)
+            if forecast_data is not None:
+                fig_forecast = go.Figure()
+                fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], name='Forecast', line=dict(color='royalblue', width=2)))
+                fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill=None, mode='lines', line=dict(color='lightgrey'), name='Upper Bound'))
+                fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='lines', line=dict(color='lightgrey'), name='Lower Bound'))
+                actuals_df = df_bonds.groupby(pd.Grouper(key='Issue Date', freq='M'))['Amount (USD)'].sum().reset_index()
+                fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Monthly Data', marker=dict(color='red', size=4)))
+                fig_forecast.update_layout(title="5-Year Green Bond Market Forecast", xaxis_title="Date", yaxis_title="Capital Mobilised (USD)", template="plotly_white")
+                st.plotly_chart(fig_forecast, use_container_width=True)
+                st.info("The forecast shows the expected growth trajectory, making a strong case for the urgent need for a standardized framework to manage this multi-trillion-dollar market.")
+            else:
+                st.warning("Could not generate forecast. More data points are needed.")
+
+        with st.expander("Advanced Analysis 2: Predicting Green Bond Size"):
+            st.markdown("This analysis compares three regression models to predict the **size (Amount USD)** of a green bond based on its characteristics. It helps identify the key drivers of market structure.")
             
-            tab1, tab2, tab3 = st.tabs(["Linear Regression", "Ridge Regression", "Lasso Regression"])
-            with tab1:
-                st.dataframe(coefficients["Linear Regression"])
-            with tab2:
-                st.dataframe(coefficients["Ridge Regression (alpha=1.0)"])
-            with tab3:
-                st.dataframe(coefficients["Lasso Regression (alpha=0.01)"])
-        else:
-            st.warning("Could not build regression model for the selected data. Please select a larger range of data using the sidebar filters.")
+            scores, coefficients = run_bond_size_regression(df_bonds_filtered)
+            
+            if scores:
+                st.subheader("Model Performance (R-squared)")
+                st.info("R-squared measures how well the model explains the variation in bond size. Higher is better. The target variable (Amount USD) has been log-transformed for model stability.")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Linear Regression", f"{scores['Linear Regression']:.3f}")
+                col2.metric("Ridge Regression", f"{scores['Ridge Regression (alpha=1.0)']:.3f}")
+                col3.metric("Lasso Regression", f"{scores['Lasso Regression (alpha=0.01)']:.3f}")
 
-else: st.warning("Data for Objective 1 could not be loaded or is empty for the selected filters.")
+                st.subheader("Model Coefficients")
+                st.markdown("Coefficients show the impact of each feature on a bond's size. Lasso is notable for shrinking unimportant feature coefficients to zero, which helps in identifying the most significant drivers.")
+                
+                tab1, tab2, tab3 = st.tabs(["Linear Regression", "Ridge Regression", "Lasso Regression"])
+                with tab1: st.dataframe(coefficients["Linear Regression"])
+                with tab2: st.dataframe(coefficients["Ridge Regression (alpha=1.0)"])
+                with tab3: st.dataframe(coefficients["Lasso Regression (alpha=0.01)"])
+            else:
+                st.warning("Could not build regression model for the selected data. Please select a larger range of data using the sidebar filters.")
+
+    else: st.warning("Data for the selected filters is empty. Please adjust the year range or country selection.")
+else: st.warning("Data for Objective 1 could not be loaded.")
+
+st.divider()
 
 # --- OBJECTIVE 2 ---
-st.header("Objective 2: The Investor Psychology Landscape")
+st.header("🧠 Objective 2: The Investor Psychology Landscape")
 if df_bias is not None:
     st.markdown("### Descriptive Analysis: The Awareness-Bias Relationship")
+    st.info("The scatter plot below visually confirms a key finding: as an investor's awareness of ESG principles increases, their prevalence for behavioral biases tends to decrease.")
     fig_scatter = px.scatter(df_bias, x='ESGAwareness', y='BiasPrevalence', hover_name='Region', trendline="ols",
                            labels={"ESGAwareness": "ESG Awareness (%)", "BiasPrevalence": "Bias Prevalence (%)"},
-                           title="Higher ESG Awareness is Correlated with Lower Investor Bias")
+                           title="Higher ESG Awareness is Correlated with Lower Investor Bias", template="plotly_white")
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    with st.expander("Advanced Analysis: Investor Segmentation (Clustering)"):
-        st.markdown("This analysis uses the K-Means algorithm to automatically group investors into distinct segments based on their awareness and bias levels.")
-        df_bias_clustered = run_kmeans_clustering(df_bias.copy())
-        if df_bias_clustered is not None:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Investor Segments Visualized")
-                fig_cluster = px.scatter(df_bias_clustered, x='ESGAwareness', y='BiasPrevalence', color='Cluster', hover_name='Region', title="Data-Driven Investor Archetypes")
-                st.plotly_chart(fig_cluster, use_container_width=True)
-            with col2:
-                st.subheader("Cluster Profiles (Average Values)")
-                cluster_profiles = df_bias_clustered.groupby('Cluster')[['ESGAwareness', 'BiasPrevalence']].mean().round(2)
-                st.dataframe(cluster_profiles)
-                st.info("Use these profiles to define data-driven archetypes like 'High-Risk Novice' (low awareness, high bias) or 'Informed & Confident' (high awareness, low bias) for targeted strategies.")
+    st.divider()
+    
+    st.markdown("### Advanced Analysis: Investor Segmentation (Clustering)")
+    st.info("This analysis uses the K-Means algorithm to automatically group investors into distinct segments based on their awareness and bias levels, revealing natural archetypes in the market.")
+    df_bias_clustered = run_kmeans_clustering(df_bias.copy())
+    if df_bias_clustered is not None:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            fig_cluster = px.scatter(df_bias_clustered, x='ESGAwareness', y='BiasPrevalence', color='Cluster', 
+                                     hover_name='Region', title="Data-Driven Investor Archetypes",
+                                     color_discrete_map={"0": "#1f77b4", "1": "#ff7f0e", "2": "#2ca02c"},
+                                     template="plotly_white")
+            st.plotly_chart(fig_cluster, use_container_width=True)
+        with col2:
+            st.subheader("Cluster Profiles")
+            st.markdown("Each cluster represents a distinct investor profile with unique needs.")
+            cluster_profiles = df_bias_clustered.groupby('Cluster')[['ESGAwareness', 'BiasPrevalence']].mean().round(2)
+            
+            st.markdown("##### Cluster 0: The Informed & Confident")
+            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['0', 'ESGAwareness']}%")
+            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['0', 'BiasPrevalence']}%")
+
+            st.markdown("##### Cluster 1: The Cautious Mainstream")
+            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['1', 'ESGAwareness']}%")
+            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['1', 'BiasPrevalence']}%")
+
+            st.markdown("##### Cluster 2: The High-Risk & Uninformed")
+            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['2', 'ESGAwareness']}%")
+            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['2', 'BiasPrevalence']}%")
+
 else: st.warning("Data for Objective 2 could not be loaded.")
 
+st.divider()
+
 # --- OBJECTIVE 3 ---
-st.header("Objective 3: The Global Biodiversity Policy Toolkit")
+st.header("🌍 Objective 3: The Global Biodiversity Policy Toolkit")
 if df_policy is not None:
     st.markdown("### Descriptive Analysis: The Current Policy Landscape")
+    st.info("This section analyzes the composition of the global biodiversity finance toolkit, revealing a heavy reliance on a few instrument types and a significant gap between developed and developing nations.")
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Global Policy Mix")
         policy_mix = df_policy['InstrumentType'].value_counts().reset_index()
-        fig_pie = px.pie(policy_mix, names='InstrumentType', values='count', hole=0.4, title="Current Toolkit is Dominated by Subsidies & Taxes")
+        fig_pie = px.pie(policy_mix, names='InstrumentType', values='count', hole=0.4, 
+                         title="Current Toolkit is Dominated by Subsidies & Taxes",
+                         template="plotly_white")
         st.plotly_chart(fig_pie, use_container_width=True)
     with col2:
         st.subheader("OECD vs. Non-OECD Policy Toolkits")
         oecd_mix = df_policy.groupby(['OECD_Status', 'InstrumentType']).size().reset_index(name='Count')
-        fig_stacked = px.bar(oecd_mix, x='OECD_Status', y='Count', color='InstrumentType', barmode='stack', title="Developed Nations Use More Diverse Toolkits")
+        fig_stacked = px.bar(oecd_mix, x='OECD_Status', y='Count', color='InstrumentType', 
+                             barmode='stack', title="Developed Nations Use More Diverse Toolkits",
+                             template="plotly_white")
         st.plotly_chart(fig_stacked, use_container_width=True)
 
     with st.expander("Advanced Analysis: Discovering the 'Policy Playbook' (Association Rule Mining)"):
-        st.markdown("This model finds 'if-then' rules in how countries combine different policy instruments.")
+        st.markdown("This model finds 'if-then' rules in how countries combine different policy instruments. It helps uncover a natural sequence for policy adoption, providing a roadmap for developing nations.")
         rules = run_association_rules(df_policy)
         if rules is not None and not rules.empty:
+            st.markdown("Use the sliders to filter rules by their statistical strength.")
             col1, col2 = st.columns(2)
             min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.6, 0.05, key="confidence_slider")
             min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.5, 0.1, key="lift_slider")
             filtered_rules = rules[(rules['confidence'] >= min_confidence) & (rules['lift'] >= min_lift)]
             st.dataframe(filtered_rules)
-            st.info("These rules suggest a potential 'policy playbook' or a natural sequence for adopting new instruments, providing a data-driven roadmap for developing nations.")
         else:
             st.warning("No significant association rules found. Try lowering the filter thresholds.")
 else: st.warning("Data for Objective 3 could not be loaded.")
+
