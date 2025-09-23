@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from mlxtend.frequent_patterns import apriori, association_rules
 from prophet import Prophet
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -75,22 +75,36 @@ def run_prophet_forecast(df):
     return forecast
 
 @st.cache_data
-def run_regression_analysis(df):
+def run_all_regressions(df):
     if df is None or df.empty: return None, None
     X = df[['Region', 'InvestorType', 'ESGAwareness']]
     y = df['BiasPrevalence']
     categorical_features = ['Region', 'InvestorType']
     preprocessor = ColumnTransformer(transformers=[('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)], remainder='passthrough')
-    model = Pipeline(steps=[('preprocessor', preprocessor), ('regressor', LinearRegression())])
-    model.fit(X, y)
-    score = model.score(X, y)
-    feature_names = model.named_steps['preprocessor'].get_feature_names_out()
-    coefficients = model.named_steps['regressor'].coef_
-    coef_summary = pd.DataFrame(coefficients, index=feature_names, columns=['Coefficient'])
-    coef_summary['AbsoluteCoefficient'] = np.abs(coef_summary['Coefficient'])
-    coef_summary = coef_summary.sort_values('AbsoluteCoefficient', ascending=False)
-    coef_summary.index = coef_summary.index.str.replace('remainder__', '').str.replace('cat__', '')
-    return score, coef_summary
+
+    models = {
+        "Linear Regression": LinearRegression(),
+        "Ridge Regression (alpha=1.0)": Ridge(alpha=1.0),
+        "Lasso Regression (alpha=0.1)": Lasso(alpha=0.1)
+    }
+    
+    scores = {}
+    coefficients = {}
+    
+    for name, model in models.items():
+        pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('regressor', model)])
+        pipeline.fit(X, y)
+        scores[name] = pipeline.score(X, y)
+        
+        feature_names = pipeline.named_steps['preprocessor'].get_feature_names_out()
+        coefs = pipeline.named_steps['regressor'].coef_
+        
+        coef_summary = pd.DataFrame(coefs, index=feature_names, columns=['Coefficient'])
+        coef_summary.index = coef_summary.index.str.replace('remainder__', '').str.replace('cat__', '')
+        coefficients[name] = coef_summary.sort_values('Coefficient', ascending=False)
+        
+    return scores, coefficients
+
 
 @st.cache_data
 def run_kmeans_clustering(df):
@@ -165,18 +179,29 @@ if df_bias is not None:
     st.plotly_chart(fig_scatter, use_container_width=True)
 
     with st.expander("Advanced Analysis: Predictive Modeling & Segmentation"):
-        st.markdown("#### 1. Which factors are the most important drivers of bias?")
-        model_score, coef_summary = run_regression_analysis(df_bias)
-        if model_score is not None:
-            col1, col2 = st.columns([1,2])
-            with col1:
-                 st.metric("Model R-squared (Accuracy)", f"{model_score:.2f}", help=f"This model explains {model_score:.0%} of the variation in investor bias.")
-                 st.success(f"**Conclusion:** The single most important predictor of investor bias is **'{coef_summary.index[0].replace('_', ' ')}'**.")
-            with col2:
-                st.subheader("Key Drivers of Investor Bias (Ranked by Importance)")
-                coef_summary_chart = coef_summary.sort_values('AbsoluteCoefficient', ascending=True)
-                fig_importance = px.bar(coef_summary_chart, y=coef_summary_chart.index, x='AbsoluteCoefficient', orientation='h')
-                st.plotly_chart(fig_importance, use_container_width=True)
+        st.markdown("#### 1. Comparing Predictive Models: Linear, Ridge & Lasso")
+        st.info("This analysis compares three regression models to predict investor bias. Ridge and Lasso are 'regularized' models that can prevent overfitting and perform feature selection.")
+        
+        scores, coefficients = run_all_regressions(df_bias)
+        
+        if scores:
+            st.subheader("Model Performance (R-squared)")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Linear Regression", f"{scores['Linear Regression']:.3f}")
+            col2.metric("Ridge Regression", f"{scores['Ridge Regression (alpha=1.0)']:.3f}")
+            col3.metric("Lasso Regression", f"{scores['Lasso Regression (alpha=0.1)']:.3f}")
+
+            st.subheader("Model Coefficients")
+            st.markdown("Coefficients show the impact of each feature on bias. Lasso is notable for shrinking unimportant feature coefficients to zero.")
+            
+            tab1, tab2, tab3 = st.tabs(["Linear Regression", "Ridge Regression", "Lasso Regression"])
+            with tab1:
+                st.dataframe(coefficients["Linear Regression"])
+            with tab2:
+                st.dataframe(coefficients["Ridge Regression (alpha=1.0)"])
+            with tab3:
+                st.dataframe(coefficients["Lasso Regression (alpha=0.1)"])
+
 
         st.markdown("---")
         st.markdown("#### 2. What natural investor segments exist in the data?")
