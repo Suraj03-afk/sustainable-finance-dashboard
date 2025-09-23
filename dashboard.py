@@ -35,7 +35,7 @@ def load_data():
         df_bonds['Issue Date'] = pd.to_datetime(df_bonds['Issue Date'], errors='coerce')
         df_bonds['Year'] = df_bonds['Issue Date'].dt.year
         df_bonds['Amount (USD)'] = pd.to_numeric(df_bonds['Amount (USD)'], errors='coerce')
-        df_bonds.dropna(subset=['Issue Date', 'Amount (USD)', 'Country', 'Sector'], inplace=True)
+        df_bonds.dropna(subset=['Issue Date', 'Amount (USD)', 'Country', 'Sector', 'Theme'], inplace=True)
     except Exception as e:
         st.error(f"Error loading Objective 1 data from `{bonds_filename}`. Please check file and sheet name ('news_makers_export'). Error: {e}")
 
@@ -75,17 +75,28 @@ def run_prophet_forecast(df):
     return forecast
 
 @st.cache_data
-def run_all_regressions(df):
-    if df is None or df.empty: return None, None
-    X = df[['Region', 'InvestorType', 'ESGAwareness']]
-    y = df['BiasPrevalence']
-    categorical_features = ['Region', 'InvestorType']
+def run_bond_size_regression(df):
+    if df is None or df.empty or len(df) < 10: return None, None
+    
+    # To make the model stable, we'll focus on the most frequent categories
+    top_countries = df['Country'].value_counts().nlargest(10).index
+    top_sectors = df['Sector'].value_counts().nlargest(10).index
+    
+    df_filtered = df[df['Country'].isin(top_countries) & df['Sector'].isin(top_sectors)].copy()
+    
+    if len(df_filtered) < 10: return None, None
+
+    # Log transform the target variable to handle skewness
+    y = np.log1p(df_filtered['Amount (USD)'])
+    X = df_filtered[['Country', 'Sector', 'Year']]
+    
+    categorical_features = ['Country', 'Sector']
     preprocessor = ColumnTransformer(transformers=[('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)], remainder='passthrough')
 
     models = {
         "Linear Regression": LinearRegression(),
         "Ridge Regression (alpha=1.0)": Ridge(alpha=1.0),
-        "Lasso Regression (alpha=0.1)": Lasso(alpha=0.1)
+        "Lasso Regression (alpha=0.01)": Lasso(alpha=0.01) # Use a smaller alpha for Lasso
     }
     
     scores = {}
@@ -104,7 +115,6 @@ def run_all_regressions(df):
         coefficients[name] = coef_summary.sort_values('Coefficient', ascending=False)
         
     return scores, coefficients
-
 
 @st.cache_data
 def run_kmeans_clustering(df):
@@ -152,7 +162,7 @@ if not df_bonds_filtered.empty:
     col2.metric("Number of Bonds", f"{len(df_bonds_filtered):,}")
     col3.metric("Number of Countries", f"{df_bonds_filtered['Country'].nunique()}")
     
-    with st.expander("Advanced Analysis: Time Series Forecasting"):
+    with st.expander("Advanced Analysis 1: Time Series Forecasting"):
         st.markdown("This model uses the Prophet forecasting library to project the future growth of the green bond market based on historical trends.")
         forecast_data = run_prophet_forecast(df_bonds) # Use unfiltered data for a stable forecast
         if forecast_data is not None:
@@ -164,9 +174,36 @@ if not df_bonds_filtered.empty:
             fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Monthly Data', marker=dict(color='red', size=4)))
             fig_forecast.update_layout(title="5-Year Green Bond Market Forecast", xaxis_title="Date", yaxis_title="Capital Mobilised (USD)")
             st.plotly_chart(fig_forecast, use_container_width=True)
-            st.info("The forecast shows the expected growth trajectory and the 'cone of uncertainty' representing the likely range of future outcomes, making a strong case for the urgent need for a standardized framework.")
+            st.info("The forecast shows the expected growth trajectory, making a strong case for the urgent need for a standardized framework.")
         else:
             st.warning("Could not generate forecast. More data points are needed.")
+
+    with st.expander("Advanced Analysis 2: Predicting Green Bond Size"):
+        st.markdown("This analysis compares three regression models to predict the **size (Amount USD)** of a green bond based on its characteristics. It helps identify the key drivers of market structure.")
+        
+        scores, coefficients = run_bond_size_regression(df_bonds_filtered)
+        
+        if scores:
+            st.subheader("Model Performance (R-squared)")
+            st.info("R-squared measures how well the model explains the variation in bond size. Higher is better. The target variable (Amount USD) has been log-transformed for model stability.")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Linear Regression", f"{scores['Linear Regression']:.3f}")
+            col2.metric("Ridge Regression", f"{scores['Ridge Regression (alpha=1.0)']:.3f}")
+            col3.metric("Lasso Regression", f"{scores['Lasso Regression (alpha=0.01)']:.3f}")
+
+            st.subheader("Model Coefficients")
+            st.markdown("Coefficients show the impact of each feature on a bond's size. Lasso is notable for shrinking unimportant feature coefficients to zero, helping with feature selection.")
+            
+            tab1, tab2, tab3 = st.tabs(["Linear Regression", "Ridge Regression", "Lasso Regression"])
+            with tab1:
+                st.dataframe(coefficients["Linear Regression"])
+            with tab2:
+                st.dataframe(coefficients["Ridge Regression (alpha=1.0)"])
+            with tab3:
+                st.dataframe(coefficients["Lasso Regression (alpha=0.01)"])
+        else:
+            st.warning("Could not build regression model for the selected data. Please select a larger range of data using the sidebar filters.")
+
 else: st.warning("Data for Objective 1 could not be loaded or is empty for the selected filters.")
 
 # --- OBJECTIVE 2 ---
@@ -178,33 +215,8 @@ if df_bias is not None:
                            title="Higher ESG Awareness is Correlated with Lower Investor Bias")
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    with st.expander("Advanced Analysis: Predictive Modeling & Segmentation"):
-        st.markdown("#### 1. Comparing Predictive Models: Linear, Ridge & Lasso")
-        st.info("This analysis compares three regression models to predict investor bias. Ridge and Lasso are 'regularized' models that can prevent overfitting and perform feature selection.")
-        
-        scores, coefficients = run_all_regressions(df_bias)
-        
-        if scores:
-            st.subheader("Model Performance (R-squared)")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Linear Regression", f"{scores['Linear Regression']:.3f}")
-            col2.metric("Ridge Regression", f"{scores['Ridge Regression (alpha=1.0)']:.3f}")
-            col3.metric("Lasso Regression", f"{scores['Lasso Regression (alpha=0.1)']:.3f}")
-
-            st.subheader("Model Coefficients")
-            st.markdown("Coefficients show the impact of each feature on bias. Lasso is notable for shrinking unimportant feature coefficients to zero.")
-            
-            tab1, tab2, tab3 = st.tabs(["Linear Regression", "Ridge Regression", "Lasso Regression"])
-            with tab1:
-                st.dataframe(coefficients["Linear Regression"])
-            with tab2:
-                st.dataframe(coefficients["Ridge Regression (alpha=1.0)"])
-            with tab3:
-                st.dataframe(coefficients["Lasso Regression (alpha=0.1)"])
-
-
-        st.markdown("---")
-        st.markdown("#### 2. What natural investor segments exist in the data?")
+    with st.expander("Advanced Analysis: Investor Segmentation (Clustering)"):
+        st.markdown("This analysis uses the K-Means algorithm to automatically group investors into distinct segments based on their awareness and bias levels.")
         df_bias_clustered = run_kmeans_clustering(df_bias.copy())
         if df_bias_clustered is not None:
             col1, col2 = st.columns(2)
