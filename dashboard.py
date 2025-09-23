@@ -154,10 +154,15 @@ def run_kmeans_clustering(df):
     scaled_features = scaler.fit_transform(features)
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
     df['Cluster'] = kmeans.fit_predict(scaled_features)
-    # Re-order clusters for consistent interpretation
-    cluster_means = df.groupby('Cluster')['BiasPrevalence'].mean().sort_values().index
+    # Re-order clusters for consistent interpretation based on bias level
+    cluster_means = df.groupby('Cluster')['BiasPrevalence'].mean().sort_values(ascending=False).index
     cluster_map = {old: new for new, old in enumerate(cluster_means)}
-    df['Cluster'] = df['Cluster'].map(cluster_map).astype(str)
+    df['Cluster'] = df['Cluster'].map(cluster_map)
+    
+    # Assign meaningful names
+    cluster_names = {0: "2: High-Risk & Uninformed", 1: "1: Cautious Mainstream", 2: "0: Informed & Confident"}
+    df['ClusterName'] = df['Cluster'].map(cluster_names)
+    
     return df
 
 @st.cache_data
@@ -170,7 +175,7 @@ def run_association_rules(df):
     rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1)
     rules['antecedents'] = rules['antecedents'].apply(lambda x: ', '.join(list(x)))
     rules['consequents'] = rules['consequents'].apply(lambda x: ', '.join(list(x)))
-    return rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']]
+    return rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']].sort_values(by='lift', ascending=False)
 
 # --- MAIN APP ---
 df_bonds, df_bias, df_policy = load_data()
@@ -266,27 +271,21 @@ if df_bias is not None:
     if df_bias_clustered is not None:
         col1, col2 = st.columns([2, 1])
         with col1:
-            fig_cluster = px.scatter(df_bias_clustered, x='ESGAwareness', y='BiasPrevalence', color='Cluster', 
+            fig_cluster = px.scatter(df_bias_clustered, x='ESGAwareness', y='BiasPrevalence', color='ClusterName', 
                                      hover_name='Region', title="Data-Driven Investor Archetypes",
-                                     color_discrete_map={"0": "#1f77b4", "1": "#ff7f0e", "2": "#2ca02c"},
+                                     labels={"ClusterName": "Investor Segment"},
                                      template="plotly_white")
             st.plotly_chart(fig_cluster, use_container_width=True)
         with col2:
             st.subheader("Cluster Profiles")
             st.markdown("Each cluster represents a distinct investor profile with unique needs.")
-            cluster_profiles = df_bias_clustered.groupby('Cluster')[['ESGAwareness', 'BiasPrevalence']].mean().round(2)
+            cluster_profiles = df_bias_clustered.groupby('ClusterName')[['ESGAwareness', 'BiasPrevalence']].mean().round(2).sort_index()
             
-            st.markdown("##### Cluster 0: The Informed & Confident")
-            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['0', 'ESGAwareness']}%")
-            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['0', 'BiasPrevalence']}%")
-
-            st.markdown("##### Cluster 1: The Cautious Mainstream")
-            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['1', 'ESGAwareness']}%")
-            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['1', 'BiasPrevalence']}%")
-
-            st.markdown("##### Cluster 2: The High-Risk & Uninformed")
-            st.metric("Avg. ESG Awareness", f"{cluster_profiles.loc['2', 'ESGAwareness']}%")
-            st.metric("Avg. Bias Prevalence", f"{cluster_profiles.loc['2', 'BiasPrevalence']}%")
+            for index, row in cluster_profiles.iterrows():
+                st.markdown(f"##### {index}")
+                c1, c2 = st.columns(2)
+                c1.metric("Avg. ESG Awareness", f"{row['ESGAwareness']}%")
+                c2.metric("Avg. Bias Prevalence", f"{row['BiasPrevalence']}%")
 
 else: st.warning("Data for Objective 2 could not be loaded.")
 
@@ -319,11 +318,32 @@ if df_policy is not None:
         if rules is not None and not rules.empty:
             st.markdown("Use the sliders to filter rules by their statistical strength.")
             col1, col2 = st.columns(2)
-            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.6, 0.05, key="confidence_slider")
-            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.5, 0.1, key="lift_slider")
+            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.8, 0.05, key="confidence_slider")
+            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 2.0, 0.1, key="lift_slider")
+            
             filtered_rules = rules[(rules['confidence'] >= min_confidence) & (rules['lift'] >= min_lift)]
-            st.dataframe(filtered_rules)
+            
+            if not filtered_rules.empty:
+                st.dataframe(filtered_rules)
+                
+                # Dynamic Inference
+                st.subheader("Key Inference from Strongest Rule")
+                strongest_rule = filtered_rules.iloc[0]
+                antecedent = strongest_rule['antecedents']
+                consequent = strongest_rule['consequents']
+                confidence = strongest_rule['confidence']
+                lift = strongest_rule['lift']
+                
+                st.info(f"""
+                The strongest rule found with the current filter settings is:
+                **IF** a country implements **`{antecedent}`**, **THEN** it is **{confidence:.0%} likely** to also have **`{consequent}`**.
+
+                **What this means:** The 'lift' value of **{lift:.2f}** shows that this combination occurs over **{lift:.1f} times more frequently** than would be expected by random chance. 
+                This suggests a strong sequential relationship, indicating that `{antecedent}` may be a foundational policy that enables the later adoption of `{consequent}`.
+                """)
+            else:
+                st.warning("No rules found with the current filter settings. Try lowering the thresholds.")
         else:
-            st.warning("No significant association rules found. Try lowering the filter thresholds.")
+            st.warning("No significant association rules found in the dataset.")
 else: st.warning("Data for Objective 3 could not be loaded.")
 
