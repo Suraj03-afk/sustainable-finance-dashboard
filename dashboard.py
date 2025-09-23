@@ -4,7 +4,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from mlxtend.frequent_patterns import apriori, association_rules
 from prophet import Prophet
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import numpy as np
+import holidays
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -55,52 +62,48 @@ def load_data():
 
     return df_bonds, df_bias, df_policy
 
-# --- WHAT-IF & ADVANCED ANALYSIS FUNCTIONS ---
-@st.cache_data
-def generate_frontier_data():
-    # ... (Function remains the same as previous version)
-    dev_potential = 20
-    dev_ing_potential = 9
-    adoption_rates = {'dev_dark': 0.3, 'dev_light': 0.6, 'dev_ing_dark': 0.1, 'dev_ing_light': 0.8}
-    quality_scores = {'dark': 9, 'light': 4}
-    frontier_points = []
-    for i in range(11):
-        mix_dark = i / 10.0
-        mix_light = 1.0 - mix_dark
-        cap_dev_dark = dev_potential * adoption_rates['dev_dark'] * mix_dark
-        cap_dev_light = dev_potential * adoption_rates['dev_light'] * mix_light
-        cap_deving_dark = dev_ing_potential * adoption_rates['dev_ing_dark'] * mix_dark
-        cap_deving_light = dev_ing_potential * adoption_rates['dev_ing_light'] * mix_light
-        total_capital = cap_dev_dark + cap_dev_light + cap_deving_dark + cap_deving_light
-        if total_capital > 0:
-            total_quality_points = ((cap_dev_dark + cap_deving_dark) * quality_scores['dark']) + ((cap_dev_light + cap_deving_light) * quality_scores['light'])
-            avg_quality = total_quality_points / total_capital
-        else:
-            avg_quality = quality_scores['dark'] if mix_dark == 1.0 else quality_scores['light']
-        frontier_points.append({'mix': mix_dark * 100, 'TotalCapital': total_capital, 'AverageEQS': avg_quality})
-    return pd.DataFrame(frontier_points)
-
+# --- ADVANCED ANALYSIS FUNCTIONS ---
 @st.cache_data
 def run_prophet_forecast(df):
-    """
-    Performs a time series forecast using Prophet.
-    """
-    if df is None or df.empty:
-        return None
-    # Prophet requires columns to be named 'ds' (datestamp) and 'y' (value)
+    if df is None or len(df) < 2: return None
     prophet_df = df.groupby('Issue Date')['Amount (USD)'].sum().reset_index()
     prophet_df.columns = ['ds', 'y']
-    
     model = Prophet(yearly_seasonality=True, daily_seasonality=False)
     model.fit(prophet_df)
-    
     future = model.make_future_dataframe(periods=5, freq='Y')
     forecast = model.predict(future)
     return forecast
 
 @st.cache_data
+def run_regression_analysis(df):
+    if df is None or df.empty: return None, None
+    X = df[['Region', 'InvestorType', 'ESGAwareness']]
+    y = df['BiasPrevalence']
+    categorical_features = ['Region', 'InvestorType']
+    preprocessor = ColumnTransformer(transformers=[('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)], remainder='passthrough')
+    model = Pipeline(steps=[('preprocessor', preprocessor), ('regressor', LinearRegression())])
+    model.fit(X, y)
+    score = model.score(X, y)
+    feature_names = model.named_steps['preprocessor'].get_feature_names_out()
+    coefficients = model.named_steps['regressor'].coef_
+    coef_summary = pd.DataFrame(coefficients, index=feature_names, columns=['Coefficient'])
+    coef_summary['AbsoluteCoefficient'] = np.abs(coef_summary['Coefficient'])
+    coef_summary = coef_summary.sort_values('AbsoluteCoefficient', ascending=False)
+    coef_summary.index = coef_summary.index.str.replace('remainder__', '').str.replace('cat__', '')
+    return score, coef_summary
+
+@st.cache_data
+def run_kmeans_clustering(df):
+    if df is None or df.empty: return None
+    features = df[['ESGAwareness', 'BiasPrevalence']]
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features)
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+    df['Cluster'] = kmeans.fit_predict(scaled_features).astype(str)
+    return df
+
+@st.cache_data
 def run_association_rules(df):
-    # ... (Function remains the same as previous version)
     if df is None or df.empty: return None
     basket = (df.groupby(['CountryName', 'InstrumentType_Detail'])['InstrumentId'].count().unstack().reset_index().fillna(0).set_index('CountryName'))
     basket_sets = basket.applymap(lambda x: 1 if x > 0 else 0)
@@ -114,7 +117,7 @@ def run_association_rules(df):
 # --- MAIN APP ---
 df_bonds, df_bias, df_policy = load_data()
 st.title("🌿 Sustainable Finance Project Dashboard")
-st.markdown("An interactive summary of the key findings and strategic analyses across three core research objectives.")
+st.markdown("An interactive summary of key findings and advanced data analytics across three core research objectives.")
 
 # --- SIDEBAR FILTERS ---
 if df_bonds is not None:
@@ -130,119 +133,94 @@ else:
 # --- OBJECTIVE 1 ---
 st.header("Objective 1: The Global Green Finance Market")
 if not df_bonds_filtered.empty:
-    with st.expander("What-If Analysis: The Impact Frontier of Framework Design"):
-        # ... (Frontier model remains the same)
-        st.markdown("This model visualizes the strategic trade-off between maximizing total capital raised and ensuring high environmental quality. Use the slider to explore different framework designs.")
-        frontier_data = generate_frontier_data()
-        col1, col2 = st.columns([3, 2])
-        with col1:
-            st.subheader("The Impact Frontier")
-            fig_frontier = px.scatter(frontier_data, x='TotalCapital', y='AverageEQS', labels={'TotalCapital': 'Total Capital Mobilised (Relative)', 'AverageEQS': 'Average Environmental Quality Score'}, title='Trade-off between Capital and Quality')
-            fig_frontier.update_traces(mode='lines+markers')
-            st.plotly_chart(fig_frontier, use_container_width=True)
-        with col2:
-            st.subheader("Test a Policy Mix")
-            selected_mix = st.slider("Select Framework Policy Mix (% Dark Green)", 0, 100, 50, 10)
-            closest_point = frontier_data.iloc[(frontier_data['mix'] - selected_mix).abs().argsort()[:1]]
-            capital_result = closest_point['TotalCapital'].values[0]
-            quality_result = closest_point['AverageEQS'].values[0]
-            st.metric("Resulting Capital Mobilised", f"{capital_result:.2f}")
-            st.metric("Resulting Average Quality", f"{quality_result:.2f}")
-
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Capital Mobilised", f"${df_bonds_filtered['Amount (USD)'].sum()/1e9:.2f}B")
+    col2.metric("Number of Bonds", f"{len(df_bonds_filtered):,}")
+    col3.metric("Number of Countries", f"{df_bonds_filtered['Country'].nunique()}")
+    
     with st.expander("Advanced Analysis: Time Series Forecasting"):
         st.markdown("This model uses the Prophet forecasting library to project the future growth of the green bond market based on historical trends.")
-        forecast_data = run_prophet_forecast(df_bonds_filtered)
+        forecast_data = run_prophet_forecast(df_bonds) # Use unfiltered data for a stable forecast
         if forecast_data is not None:
             fig_forecast = go.Figure()
-            # Add historical data
             fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], name='Forecast', line=dict(color='royalblue', width=2)))
-            # Add prediction interval
             fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill=None, mode='lines', line=dict(color='lightgrey'), name='Upper Bound'))
             fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='lines', line=dict(color='lightgrey'), name='Lower Bound'))
-            # Add actuals
-            actuals_df = df_bonds_filtered.groupby('Issue Date')['Amount (USD)'].sum().reset_index()
-            fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Data', marker=dict(color='red', size=4)))
-
+            actuals_df = df_bonds.groupby(pd.Grouper(key='Issue Date', freq='M'))['Amount (USD)'].sum().reset_index()
+            fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Monthly Data', marker=dict(color='red', size=4)))
             fig_forecast.update_layout(title="5-Year Green Bond Market Forecast", xaxis_title="Date", yaxis_title="Capital Mobilised (USD)")
             st.plotly_chart(fig_forecast, use_container_width=True)
-            st.info("The forecast shows the expected growth trajectory and the 'cone of uncertainty' representing the likely range of future outcomes.")
+            st.info("The forecast shows the expected growth trajectory and the 'cone of uncertainty' representing the likely range of future outcomes, making a strong case for the urgent need for a standardized framework.")
         else:
-            st.warning("Could not generate forecast for the selected data.")
-
+            st.warning("Could not generate forecast. More data points are needed.")
 else: st.warning("Data for Objective 1 could not be loaded or is empty for the selected filters.")
 
 # --- OBJECTIVE 2 ---
 st.header("Objective 2: The Investor Psychology Landscape")
 if df_bias is not None:
-    # ... (Descriptive charts for Obj 2 remain the same)
-    st.markdown("### Descriptive Analysis")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("The Awareness-Bias Relationship")
-        fig_scatter = px.scatter(df_bias, x='ESGAwareness', y='BiasPrevalence', hover_name='Region', trendline="ols")
-        st.plotly_chart(fig_scatter, use_container_width=True)
-    with col2:
-        st.subheader("Bias Prevalence by Region")
-        fig_bias_bar = px.bar(df_bias.sort_values('BiasPrevalence', ascending=False), x='Region', y='BiasPrevalence')
-        st.plotly_chart(fig_bias_bar, use_container_width=True)
+    st.markdown("### Descriptive Analysis: The Awareness-Bias Relationship")
+    fig_scatter = px.scatter(df_bias, x='ESGAwareness', y='BiasPrevalence', hover_name='Region', trendline="ols",
+                           labels={"ESGAwareness": "ESG Awareness (%)", "BiasPrevalence": "Bias Prevalence (%)"},
+                           title="Higher ESG Awareness is Correlated with Lower Investor Bias")
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    with st.expander("Advanced Analysis: Predictive Modeling & Segmentation"):
+        st.markdown("#### 1. Which factors are the most important drivers of bias?")
+        model_score, coef_summary = run_regression_analysis(df_bias)
+        if model_score is not None:
+            col1, col2 = st.columns([1,2])
+            with col1:
+                 st.metric("Model R-squared (Accuracy)", f"{model_score:.2f}", help=f"This model explains {model_score:.0%} of the variation in investor bias.")
+                 st.success(f"**Conclusion:** The single most important predictor of investor bias is **'{coef_summary.index[0].replace('_', ' ')}'**.")
+            with col2:
+                st.subheader("Key Drivers of Investor Bias (Ranked by Importance)")
+                coef_summary_chart = coef_summary.sort_values('AbsoluteCoefficient', ascending=True)
+                fig_importance = px.bar(coef_summary_chart, y=coef_summary_chart.index, x='AbsoluteCoefficient', orientation='h')
+                st.plotly_chart(fig_importance, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 2. What natural investor segments exist in the data?")
+        df_bias_clustered = run_kmeans_clustering(df_bias.copy())
+        if df_bias_clustered is not None:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Investor Segments Visualized")
+                fig_cluster = px.scatter(df_bias_clustered, x='ESGAwareness', y='BiasPrevalence', color='Cluster', hover_name='Region', title="Data-Driven Investor Archetypes")
+                st.plotly_chart(fig_cluster, use_container_width=True)
+            with col2:
+                st.subheader("Cluster Profiles (Average Values)")
+                cluster_profiles = df_bias_clustered.groupby('Cluster')[['ESGAwareness', 'BiasPrevalence']].mean().round(2)
+                st.dataframe(cluster_profiles)
+                st.info("Use these profiles to define data-driven archetypes like 'High-Risk Novice' (low awareness, high bias) or 'Informed & Confident' (high awareness, low bias) for targeted strategies.")
 else: st.warning("Data for Objective 2 could not be loaded.")
 
 # --- OBJECTIVE 3 ---
 st.header("Objective 3: The Global Biodiversity Policy Toolkit")
 if df_policy is not None:
-    # ... (All descriptive and What-If models for Obj 3 remain the same)
-    st.markdown("### Descriptive Analysis")
+    st.markdown("### Descriptive Analysis: The Current Policy Landscape")
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Global Policy Mix")
         policy_mix = df_policy['InstrumentType'].value_counts().reset_index()
-        fig_pie = px.pie(policy_mix, names='InstrumentType', values='count', hole=0.4)
+        fig_pie = px.pie(policy_mix, names='InstrumentType', values='count', hole=0.4, title="Current Toolkit is Dominated by Subsidies & Taxes")
         st.plotly_chart(fig_pie, use_container_width=True)
     with col2:
         st.subheader("OECD vs. Non-OECD Policy Toolkits")
         oecd_mix = df_policy.groupby(['OECD_Status', 'InstrumentType']).size().reset_index(name='Count')
-        fig_stacked = px.bar(oecd_mix, x='OECD_Status', y='Count', color='InstrumentType', barmode='stack')
+        fig_stacked = px.bar(oecd_mix, x='OECD_Status', y='Count', color='InstrumentType', barmode='stack', title="Developed Nations Use More Diverse Toolkits")
         st.plotly_chart(fig_stacked, use_container_width=True)
 
-    with st.expander("What-If Analysis 1: The Policy Maturity Lifecycle"):
-        # ... (Lifecycle model remains the same)
-        st.markdown("This model shows the long-term benefit of accelerating a country's evolution from simple to sophisticated policy tools.")
-        years = np.arange(1, 21)
-        power = {'Phase 1': 50, 'Phase 2': 100, 'Phase 3': 300}
-        natural_evo = [power['Phase 1']] * 10 + [power['Phase 2']] * 10
-        accel_evo = [power['Phase 1']] * 5 + [power['Phase 2']] * 10 + [power['Phase 3']] * 5
-        df_evo = pd.DataFrame({'Year': years, 'Natural Evolution': np.cumsum(natural_evo), 'Accelerated Evolution': np.cumsum(accel_evo)})
-        fig_evo = px.line(df_evo, x='Year', y=['Natural Evolution', 'Accelerated Evolution'], title='Cumulative Capital Mobilised Over Time')
-        st.plotly_chart(fig_evo, use_container_width=True)
-
-    with st.expander("What-If Analysis 2: Financial Resilience Stress Test"):
-        # ... (Stress test model remains the same)
-        st.markdown("This model stress-tests two different policy portfolios against a government budget crisis.")
-        cut_percent = st.slider("Select % Cut to Subsidy Budget", 0, 100, 25, 5)
-        subsidy_reliant_funding = 70 * (1 - cut_percent/100) + 30
-        diversified_funding = 20 * (1 - cut_percent/100) + 40 + 40
-        col1, col2 = st.columns(2)
-        col1.metric("Subsidy-Reliant Portfolio Funding", f"${subsidy_reliant_funding:.1f} M")
-        col2.metric("Diversified Portfolio Funding", f"${diversified_funding:.1f} M", delta=f"{diversified_funding - subsidy_reliant_funding:.1f} M")
-        cuts = np.arange(0, 101, 5)
-        sr_funding = [70 * (1 - c/100) + 30 for c in cuts]
-        div_funding = [20 * (1 - c/100) + 80 for c in cuts]
-        df_stress = pd.DataFrame({'% Cut': cuts, 'Subsidy-Reliant': sr_funding, 'Diversified': div_funding})
-        fig_stress = px.line(df_stress, x='% Cut', y=['Subsidy-Reliant', 'Diversified'], title='Portfolio Funding Under Fiscal Stress')
-        st.plotly_chart(fig_stress, use_container_width=True)
-        
-    with st.expander("Advanced Analysis: Discovering Policy Patterns (Association Rule Mining)"):
-        # ... (Association rule model remains the same)
-        st.markdown("This model uses the Apriori algorithm to find 'if-then' rules in how countries combine different policy instruments, revealing a potential 'policy playbook'.")
+    with st.expander("Advanced Analysis: Discovering the 'Policy Playbook' (Association Rule Mining)"):
+        st.markdown("This model finds 'if-then' rules in how countries combine different policy instruments.")
         rules = run_association_rules(df_policy)
         if rules is not None and not rules.empty:
             col1, col2 = st.columns(2)
-            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.5, 0.05, key="confidence_slider")
-            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.2, 0.1, key="lift_slider")
+            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.6, 0.05, key="confidence_slider")
+            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.5, 0.1, key="lift_slider")
             filtered_rules = rules[(rules['confidence'] >= min_confidence) & (rules['lift'] >= min_lift)]
             st.dataframe(filtered_rules)
-            st.info(f"Found **{len(filtered_rules)}** rules based on your filters.")
+            st.info("These rules suggest a potential 'policy playbook' or a natural sequence for adopting new instruments, providing a data-driven roadmap for developing nations.")
         else:
-            st.warning("No significant association rules found with the current settings.")
+            st.warning("No significant association rules found. Try lowering the filter thresholds.")
 else: st.warning("Data for Objective 3 could not be loaded.")
 
