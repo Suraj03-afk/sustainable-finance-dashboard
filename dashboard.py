@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from mlxtend.frequent_patterns import apriori, association_rules
+from prophet import Prophet
 import numpy as np
 
 # --- PAGE CONFIGURATION ---
@@ -80,33 +81,32 @@ def generate_frontier_data():
     return pd.DataFrame(frontier_points)
 
 @st.cache_data
-def run_association_rules(df):
+def run_prophet_forecast(df):
     """
-    Performs Association Rule Mining to find relationships between policy instruments.
+    Performs a time series forecast using Prophet.
     """
     if df is None or df.empty:
         return None
-    # Create the transaction matrix
-    basket = (df.groupby(['CountryName', 'InstrumentType_Detail'])['InstrumentId']
-              .count().unstack().reset_index().fillna(0)
-              .set_index('CountryName'))
-
-    def encode_units(x):
-        if x <= 0:
-            return 0
-        if x >= 1:
-            return 1
-    basket_sets = basket.applymap(encode_units)
+    # Prophet requires columns to be named 'ds' (datestamp) and 'y' (value)
+    prophet_df = df.groupby('Issue Date')['Amount (USD)'].sum().reset_index()
+    prophet_df.columns = ['ds', 'y']
     
-    # Run Apriori algorithm
+    model = Prophet(yearly_seasonality=True, daily_seasonality=False)
+    model.fit(prophet_df)
+    
+    future = model.make_future_dataframe(periods=5, freq='Y')
+    forecast = model.predict(future)
+    return forecast
+
+@st.cache_data
+def run_association_rules(df):
+    # ... (Function remains the same as previous version)
+    if df is None or df.empty: return None
+    basket = (df.groupby(['CountryName', 'InstrumentType_Detail'])['InstrumentId'].count().unstack().reset_index().fillna(0).set_index('CountryName'))
+    basket_sets = basket.applymap(lambda x: 1 if x > 0 else 0)
     frequent_itemsets = apriori(basket_sets, min_support=0.05, use_colnames=True)
-    if frequent_itemsets.empty:
-        return pd.DataFrame(columns=['antecedents', 'consequents', 'support', 'confidence', 'lift'])
-
-    # Generate rules
+    if frequent_itemsets.empty: return pd.DataFrame(columns=['antecedents', 'consequents', 'support', 'confidence', 'lift'])
     rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1)
-    
-    # Clean up for display
     rules['antecedents'] = rules['antecedents'].apply(lambda x: ', '.join(list(x)))
     rules['consequents'] = rules['consequents'].apply(lambda x: ', '.join(list(x)))
     return rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']]
@@ -131,6 +131,7 @@ else:
 st.header("Objective 1: The Global Green Finance Market")
 if not df_bonds_filtered.empty:
     with st.expander("What-If Analysis: The Impact Frontier of Framework Design"):
+        # ... (Frontier model remains the same)
         st.markdown("This model visualizes the strategic trade-off between maximizing total capital raised and ensuring high environmental quality. Use the slider to explore different framework designs.")
         frontier_data = generate_frontier_data()
         col1, col2 = st.columns([3, 2])
@@ -147,12 +148,33 @@ if not df_bonds_filtered.empty:
             quality_result = closest_point['AverageEQS'].values[0]
             st.metric("Resulting Capital Mobilised", f"{capital_result:.2f}")
             st.metric("Resulting Average Quality", f"{quality_result:.2f}")
-            st.info("The analysis shows that the efficiency of the trade-off (quality gained per unit of capital sacrificed) consistently improves as the framework becomes stricter.")
+
+    with st.expander("Advanced Analysis: Time Series Forecasting"):
+        st.markdown("This model uses the Prophet forecasting library to project the future growth of the green bond market based on historical trends.")
+        forecast_data = run_prophet_forecast(df_bonds_filtered)
+        if forecast_data is not None:
+            fig_forecast = go.Figure()
+            # Add historical data
+            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat'], name='Forecast', line=dict(color='royalblue', width=2)))
+            # Add prediction interval
+            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_upper'], fill=None, mode='lines', line=dict(color='lightgrey'), name='Upper Bound'))
+            fig_forecast.add_trace(go.Scatter(x=forecast_data['ds'], y=forecast_data['yhat_lower'], fill='tonexty', mode='lines', line=dict(color='lightgrey'), name='Lower Bound'))
+            # Add actuals
+            actuals_df = df_bonds_filtered.groupby('Issue Date')['Amount (USD)'].sum().reset_index()
+            fig_forecast.add_trace(go.Scatter(x=actuals_df['Issue Date'], y=actuals_df['Amount (USD)'], mode='markers', name='Historical Data', marker=dict(color='red', size=4)))
+
+            fig_forecast.update_layout(title="5-Year Green Bond Market Forecast", xaxis_title="Date", yaxis_title="Capital Mobilised (USD)")
+            st.plotly_chart(fig_forecast, use_container_width=True)
+            st.info("The forecast shows the expected growth trajectory and the 'cone of uncertainty' representing the likely range of future outcomes.")
+        else:
+            st.warning("Could not generate forecast for the selected data.")
+
 else: st.warning("Data for Objective 1 could not be loaded or is empty for the selected filters.")
 
 # --- OBJECTIVE 2 ---
 st.header("Objective 2: The Investor Psychology Landscape")
 if df_bias is not None:
+    # ... (Descriptive charts for Obj 2 remain the same)
     st.markdown("### Descriptive Analysis")
     col1, col2 = st.columns(2)
     with col1:
@@ -168,6 +190,7 @@ else: st.warning("Data for Objective 2 could not be loaded.")
 # --- OBJECTIVE 3 ---
 st.header("Objective 3: The Global Biodiversity Policy Toolkit")
 if df_policy is not None:
+    # ... (All descriptive and What-If models for Obj 3 remain the same)
     st.markdown("### Descriptive Analysis")
     col1, col2 = st.columns(2)
     with col1:
@@ -207,30 +230,19 @@ if df_policy is not None:
         df_stress = pd.DataFrame({'% Cut': cuts, 'Subsidy-Reliant': sr_funding, 'Diversified': div_funding})
         fig_stress = px.line(df_stress, x='% Cut', y=['Subsidy-Reliant', 'Diversified'], title='Portfolio Funding Under Fiscal Stress')
         st.plotly_chart(fig_stress, use_container_width=True)
-
-    with st.expander("Advanced Analysis: Discovering Policy Patterns (Association Rule Mining)"):
-        st.markdown("This model uses the Apriori algorithm to find 'if-then' rules in how countries combine different policy instruments, revealing a potential 'policy playbook'.")
         
+    with st.expander("Advanced Analysis: Discovering Policy Patterns (Association Rule Mining)"):
+        # ... (Association rule model remains the same)
+        st.markdown("This model uses the Apriori algorithm to find 'if-then' rules in how countries combine different policy instruments, revealing a potential 'policy playbook'.")
         rules = run_association_rules(df_policy)
-
         if rules is not None and not rules.empty:
             col1, col2 = st.columns(2)
-            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.5, 0.05)
-            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.2, 0.1)
-
+            min_confidence = col1.slider("Minimum Confidence", 0.0, 1.0, 0.5, 0.05, key="confidence_slider")
+            min_lift = col2.slider("Minimum Lift", 0.0, 10.0, 1.2, 0.1, key="lift_slider")
             filtered_rules = rules[(rules['confidence'] >= min_confidence) & (rules['lift'] >= min_lift)]
-            
             st.dataframe(filtered_rules)
             st.info(f"Found **{len(filtered_rules)}** rules based on your filters.")
-            st.markdown("""
-            **How to Interpret the Rules:**
-            - **Antecedents:** The 'if' part of the rule (the instrument a country has).
-            - **Consequents:** The 'then' part of the rule (the instrument a country is likely to also have).
-            - **Confidence:** How often the rule is true. A confidence of 0.6 means that 60% of countries that have the 'antecedent' instrument also have the 'consequent' instrument.
-            - **Lift:** How much more likely the 'consequent' is to be present if the 'antecedent' is present. A lift > 1 suggests a meaningful relationship.
-            """)
         else:
-            st.warning("No significant association rules found with the current settings. Try lowering the minimum support threshold in the code if needed.")
-
+            st.warning("No significant association rules found with the current settings.")
 else: st.warning("Data for Objective 3 could not be loaded.")
 
